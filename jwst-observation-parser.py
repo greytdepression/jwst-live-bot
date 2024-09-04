@@ -663,8 +663,6 @@ def make_chosts(metadata_array):
             "bot account",
             "automated post",
             "cohost.py",
-            "The Cohost Global Feed",
-            "The Global Cohost Feed",
             "The Cohost Bot Feed",
             f"Category: {metadata['category']}",
         ]
