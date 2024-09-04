@@ -11,7 +11,7 @@ from pypdf import PdfReader
 categories_line = 3
 first_obs_line = 5
 
-stellarium_exe = "C:\Program Files\Stellarium\stellarium.exe"
+stellarium_exe = "C:\\Program Files\\Stellarium\\stellarium.exe"
 
 def get_line(lines, line_num):
     return lines[line_num - 1]
