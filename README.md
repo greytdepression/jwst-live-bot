@@ -2,6 +2,8 @@
 
 All the scripts that make up the [JWST live bot](https://cohost.org/JWST-live). Based on [Cohost.py](https://github.com/valknight/Cohost.py).
 
+The chost data is prepared weekly using the `jwst-observation-parser.py` script and then uploaded to a Raspberry Pi Zero W running the `automation_script_v0.py` script which then posts the chosts throughout the week.
+
 > [!IMPORTANT]  
 > The purpose of these scripts was for me to make the [JWST live bot](https://cohost.org/JWST-live) and as such my mantra was "it works on my machine".
 > I cannot guarantee that it will work on yours.
