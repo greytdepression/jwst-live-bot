@@ -1,12 +1,12 @@
 import sys
 import json
 import functools
-
 import subprocess
 import datetime
 import os
 import urllib.request
 from pypdf import PdfReader
+import csv
 
 categories_line = 3
 first_obs_line = 5
@@ -150,23 +150,56 @@ def obs_visit_id_key(obs):
     nums = obs["VISIT ID"].split(':')
     return int(nums[0]) * 1_000_000_000_000 + int(nums[1]) * 1_000_000 + int(nums[2])
 
-def prepare_csv(observations):
+def prepare_csv(observations, out_file):
     # Sort by VISIT ID
     sorted_obs = sorted(observations, key = obs_visit_id_key)
 
-    csv_out = "Proposal,Observation,Num,Link,RA,Dec,PI,PI Institution,Title,Abstract\n"
+    with open(out_file, 'w') as file:
+        writer = csv.writer(file)
 
-    for obs in sorted_obs:
-        if "title" in obs:
-            continue
+        writer.writerow([
+            "Proposal",
+            "Observation",
+            "Num",
+            "Link",
+            "RA",
+            "Dec",
+            "PI",
+            "PI Institution",
+            "Title",
+            "Abstract"
+        ])
 
-        proposal_id = int(obs['VISIT ID'].split(':')[0])
-        obs_id = int(obs['VISIT ID'].split(':')[1])
-        obs_2nd_num = int(obs['VISIT ID'].split(':')[2])
-        proposal_link = f"https://www.stsci.edu/jwst/phase2-public/{proposal_id}.pdf"
-        csv_out += f"{proposal_id},{obs_id},{obs_2nd_num},{proposal_link},,,,,\n"
+        for obs in sorted_obs:
+            if "ra" in obs:
+                continue
 
-    return csv_out
+            proposal_id = int(obs['VISIT ID'].split(':')[0])
+            obs_id = int(obs['VISIT ID'].split(':')[1])
+            obs_2nd_num = int(obs['VISIT ID'].split(':')[2])
+            proposal_link = f"https://www.stsci.edu/jwst/phase2-public/{proposal_id}.pdf"
+
+            val_or_empty = lambda k: obs[k] if k in obs else ""
+
+            ra = val_or_empty("ra")
+            dec = val_or_empty("dec")
+            pi = val_or_empty("pi name")
+            pi_inst = val_or_empty("pi institution")
+            title = val_or_empty("title")
+            abstract = val_or_empty("abstract")
+
+            writer.writerow([
+                proposal_id,
+                obs_id,
+                obs_2nd_num,
+                proposal_link,
+                ra,
+                dec,
+                pi,
+                pi_inst,
+                title,
+                abstract,
+            ])
 
 def try_autofill_data(observations):
     visit_ids = set()
@@ -211,6 +244,7 @@ def try_parse_proposal_data(vid, observations):
     proposal_abstract = ""
     proposal_observations = dict()
     proposal_targets = dict()
+
     with PdfReader(f"cache/{vid}.pdf") as reader:
         proposal_title = proposal_get_title(reader.pages, vid)
         proposal_investigators = proposal_get_co_investigators(reader.pages, vid)
@@ -229,13 +263,22 @@ def try_parse_proposal_data(vid, observations):
         obs["co-investigators"] = proposal_investigators[1:]
 
         obs_id = int(obs["VISIT ID"].split(":")[1])
+
+        if obs_id not in proposal_observations:
+            print(f"Observation {obs_id} not in proposal {vid}.")
+            continue
+
         (target_num, target_name) = proposal_observations[obs_id]
 
         if target_num is not None:
             (target_name_, target_coords) = proposal_targets[target_num]
             assert(target_name == target_name_)
-            obs["ra"] = target_coords[0]
-            obs["dec"] = target_coords[1]
+
+            if target_coords is not None:
+                obs["ra"] = target_coords[0]
+                obs["dec"] = target_coords[1]
+            else:
+                print(f"Proposal {vid}, Observation {obs_id}, Science target {target_num}: No RA and Dec available.")
 
 
 
@@ -425,17 +468,17 @@ def insert_position_data(observations, csv_file):
 
 def insert_manual_csv_data(observations, csv_file):
     with open(csv_file) as file:
-        for line in file.readlines()[1:]:
-            if '"' in line:
-                print("ERROR: CSV contains quotation marks. This script can't parse those.")
-                exit(1)
+        reader = csv.reader(file)
+        for line in reader:
+
+            if line[0] == "Proposal":
+                continue
 
             #            0        1           2   3    4  5   6  7              8     9
             # csv_out = "Proposal,Observation,Num,Link,RA,Dec,PI,PI Institution,Title,Abstract\n"
 
-            val = lambda i: values[i] if i < len(values) else None
+            val = lambda i: line[i] if i < len(line) and len(line[i]) > 0 else None
 
-            values = line.split(",")
             visit_id = f"{val(0)}:{val(1)}:{val(2)}"
             ra = val(4)
             dec = val(5)
@@ -450,7 +493,8 @@ def insert_manual_csv_data(observations, csv_file):
                     obs["abstract"] = abstract
                     obs["pi name"] = pi
                     obs["pi institution"] = pi_inst
-                    obs["co-investigators"] = []
+                    if "co-investigators" not in obs:
+                        obs["co-investigators"] = []
                     obs["ra"] = ra
                     obs["dec"] = dec
 
@@ -496,7 +540,7 @@ def make_metadata_dict(observations):
         output_dict["abstract"] = val_or_na("abstract")
         output_dict["co-investigators"] = val_or_na("co-investigators")
 
-        inst_plus_modes = obs["SCIENCE INSTRUMENT AND MODE"]
+        inst_plus_modes = [inst for inst in obs["SCIENCE INSTRUMENT AND MODE"] if len(inst) > 0]
         output_dict["inst_plus_mode"] = inst_plus_modes
         output_dict["instruments"] = []
 
@@ -508,7 +552,7 @@ def make_metadata_dict(observations):
                     if inst_mode.startswith("WFSC NIRCam"):
                         output_dict["instruments"].append("NIRCam")
                     else:
-                        print(f"unrecognized instrument {inst_mode}")
+                        print(f"{obs['VISIT ID']}: unrecognized instrument `{inst_mode}`")
                         print("add case for this instrument, then rerun script")
                         exit(1)
         output_array.append(output_dict)
@@ -680,9 +724,9 @@ def show_help():
     print(f"""Usage: python {sys.argv[0]} [command] [args...]
 
         Commands:
-            preprocess [input txt file] - Processes the data and outputs CSV file to fill in observation coordinates.
-            compile [input txt file]    - Compiles the txt file and the CSV file into the final output
-            help                        - Displays this help page
+            preprocess <input txt file>                                 - Processes the data and outputs CSV file to fill in observation coordinates.
+            compile <input txt file> [--exclude <PROPOSAL>*] - Compiles the txt file and the CSV file into the final output. Excludes all listed proposal IDs
+            help                                                        - Displays this help page
         """)
 
 if __name__ == '__main__':
@@ -698,6 +742,7 @@ if __name__ == '__main__':
         case "preprocess":
             if len(sys.argv) != 3:
                 show_help()
+                exit(1)
 
             input_file = sys.argv[2]
             output_csv_file = input_file + '.manual.csv'
@@ -706,22 +751,30 @@ if __name__ == '__main__':
             observations = parse_observations(input_file)
 
             observations = try_autofill_data(observations)
-            csv = prepare_csv(observations)
+            prepare_csv(observations, output_csv_file)
 
             with open(output_json_file, 'w') as file:
                 json.dump(observations, file, ensure_ascii = True, indent = 2)
-
-            with open(output_csv_file, 'w') as file:
-                file.write(csv)
 
             print("\nDone precompiling data")
             print(f"Automatically detected data: {output_json_file}")
             print(f"Please manually fill in missing data in {output_csv_file}. When done, run `compile`.\n")
         case "compile":
-            if len(sys.argv) != 3:
+            if len(sys.argv) < 3:
                 show_help()
+                exit(1)
 
             input_file = sys.argv[2]
+
+            # Check for exclusions
+            exclusions = []
+            if len(sys.argv) > 3:
+                if not sys.argv[3] == "--exclude":
+                    show_help()
+                    exit(1)
+
+                for pid in sys.argv[4:]:
+                    exclusions.append(int(pid))
 
             manual_csv_file = input_file + '.manual.csv'
             observations_json_file = input_file + '.auto.json'
@@ -735,7 +788,8 @@ if __name__ == '__main__':
             insert_manual_csv_data(observations, manual_csv_file)
 
             # throw out any observation that does not have a title
-            observations = [obs for obs in observations if ("title" in obs and obs["title"] is not None)]
+            # or have been manually excluded
+            observations = [obs for obs in observations if ("title" in obs and obs["title"] is not None and int(obs["VISIT ID"].split(":")[0]) not in exclusions)]
 
             # create dir
             dir_name = datetime.datetime.now().strftime("%Y_%m_%d")
